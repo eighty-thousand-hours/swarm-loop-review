@@ -1,0 +1,5 @@
+# state dir written during fix-mode runs of the skill itself
+.swarm-loop-review/
+
+.DS_Store
+*.log

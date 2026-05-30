@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>swarm-loop-review — design one-pager</title>
+<style>
+  :root {
+    --ink: #1c1d20;
+    --muted: #5c6066;
+    --line: #e4e6ea;
+    --bg: #ffffff;
+    --accent: #4285f4;
+    --human: #f5a623;
+    --code-bg: #f5f6f8;
+    --issue: #d23f3f;
+    --suggestion: #c47d12;
+    --nit: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: #fafbfc;
+    line-height: 1.55;
+    margin: 0;
+    padding: 40px 20px 80px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  header.page {
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 16px;
+    margin-bottom: 28px;
+  }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 15px; margin: 0; }
+  h2 {
+    font-size: 17px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    margin: 34px 0 10px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 6px;
+  }
+  p { margin: 10px 0; }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  kbd, code {
+    font-family: "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1.5px 6px;
+    font-size: 13px;
+  }
+  .cmd {
+    display: inline-block;
+    background: var(--ink);
+    color: #fff;
+    border: none;
+    padding: 3px 9px;
+    border-radius: 6px;
+    font-size: 13.5px;
+  }
+  .cmd b { color: #ffd479; font-weight: 600; }
+  .lede {
+    font-size: 16px;
+    background: #f0f5ff;
+    border-left: 3px solid var(--accent);
+    padding: 12px 16px;
+    border-radius: 0 8px 8px 0;
+  }
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 7px;
+    border-radius: 999px;
+    color: #fff;
+    vertical-align: middle;
+  }
+  .tag.issue { background: var(--issue); }
+  .tag.suggestion { background: var(--suggestion); }
+  .tag.nit { background: var(--nit); }
+  .you { color: var(--human); font-weight: 700; }
+  .card {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 6px 22px 18px;
+    margin-top: 14px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  figure { margin: 0; }
+  .diagram {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+    overflow-x: auto;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .mermaid { display: flex; justify-content: center; }
+  .legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 12px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid; }
+  .sw-io { background: #e8f0fe; border-color: var(--accent); }
+  .sw-human { background: #fff4e5; border-color: var(--human); }
+  .sw-plain { background: #fff; border-color: #b9bdc4; }
+  .foot { color: var(--muted); font-size: 13px; margin-top: 40px; border-top: 1px solid var(--line); padding-top: 12px; }
+  strong.k { font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="page">
+    <h1>swarm-loop-review</h1>
+    <p class="sub">local + GitHub PR review · design one-pager · human interface &amp; agent flow · <em>new skill, separate from /rpr</em></p>
+  </header>
+
+  <p class="lede">One command runs a multi-agent review of a PR (or a local diff), resolves most disagreements itself, and posts a single review to GitHub — surfacing only the genuine judgment calls for you.</p>
+  <p style="font-size:13.5px;background:#fff8e6;border-left:3px solid var(--human);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:10px"><strong>Prerequisite:</strong> the repo must ship a <code>review-double-checks.md</code> — its codebase-specific review standards. The skill carries no project rules itself; type-safety, fail-fast, naming, etc. live there.</p>
+
+  <h2>How you run it</h2>
+  <p><span class="cmd">swarm-loop-review [target] [mode] [flags]</span></p>
+
+  <div class="card">
+  <p><strong class="k">Target</strong> — auto-detected if omitted (first match wins):</p>
+  <ul>
+    <li><code>&lt;pr-url | number&gt;</code> → that PR</li>
+    <li>else current branch <em>has an open PR</em> → review that PR</li>
+    <li>else <em>uncommitted changes</em> (e.g. on <code>main</code>) → local diff</li>
+    <li>else <em>branch ahead of base, no PR</em> → local diff vs base</li>
+    <li>else → nothing to review</li>
+  </ul>
+  <p style="font-size:13px;color:var(--muted);margin-top:4px">PR exists <em>and</em> you have uncommitted edits → PR wins; pass <code>--diff</code> to force local.</p>
+
+  <p><strong class="k">Mode</strong> — what it does with the code:</p>
+  <ul>
+    <li><strong>collaborate</strong> <em>(default)</em> — review, synthesize, recommend. Does <strong>not</strong> touch code. You decide what to act on.</li>
+    <li><strong>fix</strong> — applies the net-positive changes itself, re-reviews until clean, then posts.</li>
+  </ul>
+
+  <p><strong class="k">Flags</strong>:</p>
+  <ul>
+    <li><strong>mini</strong> — faster: just two reviewers (one all-areas Claude + Codex), a single debate round. For quick passes.</li>
+    <li><strong>local</strong> — print the review to the conversation instead of posting to GitHub (automatic when there is no PR).</li>
+    <li><strong>base &lt;branch&gt;</strong> — set the diff base (default: the PR base / <code>main</code>).</li>
+  </ul>
+  <p>Combine freely: <span class="cmd">swarm-loop-review <b>fix mini</b></span> &nbsp; <span class="cmd">swarm-loop-review <b>1234 base develop</b></span></p>
+  </div>
+
+  <h2>How it decides what to fix</h2>
+  <p>No blanket default across all findings. The triage agent uses its own judgment, but <strong>defaults to fixing</strong> the two areas it habitually <em>under</em>-acts on:</p>
+  <ul>
+    <li>violations of the repo&rsquo;s <code>review-double-checks.md</code> conventions (for minerva: type-safety, fail-fast / fail-loud, …) &nbsp;·&nbsp; over-explaining / change-narrating comments</li>
+  </ul>
+  <p>Nits are fixed only when clearly net-positive — never &ldquo;fixed&rdquo; if the change would make things worse.</p>
+
+  <h2>What it produces</h2>
+  <p>Every kept finding is <strong>debated</strong> (kill ⇄ rescue) until both sides stop moving. The result sorts into three buckets:</p>
+  <ul>
+    <li><strong>Agreed</strong> → posted as actionable comments, each tagged
+      <span class="tag issue">issue</span>
+      <span class="tag suggestion">suggestion</span>
+      <span class="tag nit">nit</span>
+      with per-section IDs (<code>C1</code>, <code>S1</code>…).</li>
+    <li><strong>Contested</strong> → posted flagged &ldquo;reviewer flagged, author dismissed — <span class="you">your call</span>.&rdquo; This is the only thing that needs you.</li>
+    <li><strong>Dismissed</strong> → dropped silently, and <em>remembered</em> so re-runs don&rsquo;t re-raise them.</li>
+  </ul>
+
+  <h2>What you see</h2>
+  <ul>
+    <li><strong>On GitHub</strong> — one review (comment-only, never request-changes / approve), with a header noting it is automated. Re-runs supersede rather than pile up.</li>
+    <li><strong>In fix mode</strong> — a changelog of what was changed / dismissed / left contested.</li>
+    <li><strong>Locally</strong> — the same review, printed in the conversation.</li>
+  </ul>
+  <p><strong class="k">Your job:</strong> arbitrate the <span class="you">Contested</span> bucket. Everything else is handled.</p>
+
+  <h2>Agent flow</h2>
+  <figure class="diagram">
+    <pre class="mermaid">
+flowchart TD
+  A(["Input: PR url / auto-detect / local diff"])
+  B["Gather diff + context"]
+  D["Dedupe to findings"]
+  K["Kill critic — context-rich author<br/>own judgment; default-fix:<br/>codebase conventions + over-explaining comments<br/>nits only if net-positive"]
+  RE["Rescue critic — fresh instance<br/>defend wrongly-dropped findings"]
+  BK["Resolve into 3 buckets"]
+  AG["Agreed"]
+  CO["Contested = your call"]
+  DI["Dismissed (remembered)"]
+  FX{"fix mode?"}
+  FIX["Apply net-positive fixes"]
+  OUT{"output where?"}
+  LP(["Print to conversation"])
+  GH(["Post ONE GitHub review<br/>comment-only + attribution<br/>contested flagged"])
+
+  subgraph R0 ["Round 0 — Review fan-out (parallel)"]
+    direction LR
+    C1["Correctness"] ~~~ C2["Code Quality"] ~~~ C3["Conventions"] ~~~ C4["Code Reuse"]
+    C5["Security"] ~~~ C6["Efficiency"] ~~~ C7["Risks — for human"] ~~~ CX["Codex — independent bugs"]
+  end
+
+  A --> B
+  B --> R0
+  R0 --> D
+  D --> K
+  K --> RE
+  RE -->|rescuer still objects · max 6 passes| K
+  RE --> BK
+  BK --> AG
+  BK --> CO
+  BK --> DI
+  AG --> FX
+  FX -->|yes| FIX
+  FIX -->|re-review changed code| R0
+  FX -->|no| OUT
+  CO --> OUT
+  OUT -->|local| LP
+  OUT -->|GitHub| GH
+
+  classDef io fill:#e8f0fe,stroke:#4285f4,color:#1a1a1a,stroke-width:1.5px;
+  classDef human fill:#fff4e5,stroke:#f5a623,color:#1a1a1a,stroke-width:1.5px;
+  class A,LP,GH io;
+  class CO human;
+    </pre>
+    <div class="legend">
+      <span><span class="swatch sw-io"></span> input / output</span>
+      <span><span class="swatch sw-human"></span> needs you</span>
+      <span><span class="swatch sw-plain"></span> agent / step</span>
+    </div>
+  </figure>
+
+  <p class="foot">Draft design — not yet built. Reviewers: 7 Claude lenses + Codex (independent bug-spotter). Loop converges by argument (collaborate) or by fixing (fix mode); dismissed findings persist across iterations so they don&rsquo;t resurface.</p>
+
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'neutral',
+    flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
+  });
+</script>
+</body>
+</html>
