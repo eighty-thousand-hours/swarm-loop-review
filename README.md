@@ -59,3 +59,7 @@ design/one-pager.html                 interface + agent-flow diagram
 ## Status
 
 Draft / pre-release. Built from the design in `design/`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
