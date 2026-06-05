@@ -43,7 +43,7 @@ Combine freely: `/swarm-loop-review fix mini`, `/swarm-loop-review 1234 base dev
 
 Resolve in order; stop at the first match:
 
-1. `plan` keyword in args → **plan mode**. The plan = the given path, else the most recent plan presented in the conversation (e.g. one just shown for approval). Neither exists → tell the user there's no plan to review and stop. A plan is never auto-detected — the keyword is required.
+1. `plan` keyword in args → **plan mode**. The plan = the given path — if that file doesn't exist, say so and stop (never fall back) — else the most recent plan presented in the conversation (e.g. one just shown for approval); if more than one candidate is plausible, ask which rather than guess. No path and no conversation plan → tell the user there's no plan to review and stop. A plan is never auto-detected — the keyword is required.
 2. Explicit PR url/number in args → **PR mode** on that PR.
 3. (unless `--diff`) `gh pr view --json number,baseRefName,url` succeeds → **PR mode** on the current branch's PR.
 4. `git status --porcelain` non-empty (uncommitted changes) → **local-diff mode**, diff = `git diff HEAD`.
@@ -108,8 +108,10 @@ against the existing codebase rather than a diff:
 
 Citations in plan mode: quote the plan line/step being flagged, plus `file:line` of existing
 code wherever the claim rests on the codebase. **Codex:** `codex review` only reads diffs —
-instead run one pass of `"$CODEX_BIN" exec "<critique prompt + plan text>"` asking for wrong
-assumptions, missing pieces, and bugs-in-waiting; same one-pass/no-resume rule.
+instead run one pass of `"$CODEX_BIN" exec` with the critique prompt + plan text piped via
+stdin (heredoc or temp file; never interpolated into the argv, which breaks on
+quotes/backticks and ARG_MAX), asking for wrong assumptions, missing pieces, and
+bugs-in-waiting; same one-pass/no-resume rule.
 
 ## Step 4 — Dedupe + kill ⇄ rescue debate
 
@@ -184,6 +186,7 @@ single fix pass (no re-review loop). Same output format and posting rules.
 
 - Clean tree, no PR, not ahead → "nothing to review," stop.
 - `plan` with no path and no plan in the conversation → "no plan to review," stop.
+- `plan <path>` where the file doesn't exist → "plan file not found," stop — don't fall back to the conversation.
 - `plan` + `fix` → warn that plan review is collaborate-only, run collaborate.
 - No `review-double-checks.md` → skip lens 3 with a prominent warning; the rest run.
 - Codex binary not found → note it, proceed Claude-only.
