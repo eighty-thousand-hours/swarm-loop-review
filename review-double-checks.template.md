@@ -4,7 +4,7 @@
 > `swarm-loop-review` skill reads it for the **Codebase Standards** lens. It holds the
 > codebase-specific rules an automated reviewer should enforce — the things you'd "double
 > check" beyond a generic review. Keep it to *review-time* conventions (not a full style
-> guide). Every entry should be checkable against a diff.
+> guide). Every entry should be checkable against a diff or an implementation plan.
 
 ## How to write entries
 

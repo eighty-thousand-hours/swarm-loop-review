@@ -1,6 +1,6 @@
 ---
 name: swarm-loop-review
-description: Multi-agent swarm review of a PR or local diff — fan out 7 reviewer lenses + Codex, debate the findings to convergence, then either discuss them (collaborate) or fix-and-post a single GitHub review (fix). Requires a review-double-checks.md at the target repo root for the codebase-standards lens.
+description: Multi-agent swarm review of a PR, local diff, or implementation plan — fan out 7 reviewer lenses + Codex, debate the findings to convergence, then either discuss them (collaborate) or fix-and-post a single GitHub review (fix). Plan review is collaborate-only. Requires a review-double-checks.md at the target repo root for the codebase-standards lens.
 allowed-tools:
   - Task
   - Agent
@@ -13,9 +13,10 @@ allowed-tools:
 
 # swarm-loop-review
 
-Run a multi-agent review of a PR or a local diff: fan out parallel reviewers, debate the
-findings down to convergence, and either present them (**collaborate**) or fix them and post
-a single GitHub review (**fix**). Most disagreements are resolved internally; only genuine
+Run a multi-agent review of a PR, a local diff, or an implementation plan: fan out parallel
+reviewers, debate the findings down to convergence, and either present them
+(**collaborate**) or fix them and post a single GitHub review (**fix**; diffs only — plan
+review is collaborate-only). Most disagreements are resolved internally; only genuine
 judgment calls are surfaced to the human.
 
 > **Prerequisite:** the target repo should contain a `review-double-checks.md` at its root —
@@ -28,11 +29,12 @@ judgment calls are surfaced to the human.
 
 `/swarm-loop-review [target] [mode] [flags]`
 
-- **target** — a PR url/number, or omit to auto-detect (Step 1).
+- **target** — a PR url/number; `plan [path]` for an implementation plan; or omit to auto-detect (Step 1).
 - **mode** — `collaborate` (default) or `fix`.
 - **flags** — `mini`, `local`, `base <branch>`, `--diff`.
 
-Combine freely: `/swarm-loop-review fix mini`, `/swarm-loop-review 1234 base develop local`.
+Combine freely: `/swarm-loop-review fix mini`, `/swarm-loop-review 1234 base develop local`,
+`/swarm-loop-review plan docs/migration-plan.md mini`.
 
 **Parse arguments** from `$ARGUMENTS` (Claude) or the user's prompt after
 `$swarm-loop-review` (Codex).
@@ -41,21 +43,24 @@ Combine freely: `/swarm-loop-review fix mini`, `/swarm-loop-review 1234 base dev
 
 Resolve in order; stop at the first match:
 
-1. Explicit PR url/number in args → **PR mode** on that PR.
-2. (unless `--diff`) `gh pr view --json number,baseRefName,url` succeeds → **PR mode** on the current branch's PR.
-3. `git status --porcelain` non-empty (uncommitted changes) → **local-diff mode**, diff = `git diff HEAD`.
-4. Branch is ahead of base with no PR → **local-diff mode**, diff = `git diff <base>...HEAD`.
-5. Otherwise (clean tree, no PR, not ahead) → tell the user there's nothing to review and stop.
+1. `plan` keyword in args → **plan mode**. The plan = the given path — if that file doesn't exist, say so and stop (never fall back) — else the most recent plan presented in the conversation (e.g. one just shown for approval); if more than one candidate is plausible, ask which rather than guess. No path and no conversation plan → tell the user there's no plan to review and stop. A plan is never auto-detected — the keyword is required.
+2. Explicit PR url/number in args → **PR mode** on that PR.
+3. (unless `--diff`) `gh pr view --json number,baseRefName,url` succeeds → **PR mode** on the current branch's PR.
+4. `git status --porcelain` non-empty (uncommitted changes) → **local-diff mode**, diff = `git diff HEAD`.
+5. Branch is ahead of base with no PR → **local-diff mode**, diff = `git diff <base>...HEAD`.
+6. Otherwise (clean tree, no PR, not ahead) → tell the user there's nothing to review and stop.
 
 Base branch = the `base <branch>` flag, else the PR base, else `main`.
 Output destination follows **mode + flags, not the target**: PR mode posts to GitHub by
-default; local-diff mode is conversation-only (implies `local`).
+default; local-diff mode is conversation-only (implies `local`). **Plan mode** is
+conversation-only and collaborate-only: `fix` → warn and run collaborate; `base`/`--diff`
+are ignored.
 
 ## Step 2 — Gather context (once)
 
 Collect, and pass into every agent's prompt so they don't re-fetch:
 
-- The diff text and changed-file list (per Step 1).
+- The diff text and changed-file list (per Step 1) — or, in plan mode, the plan text (and its file path, if it has one).
 - The repo's `review-double-checks.md` (root). **If absent, note it and skip lens 3** — the rest still run.
 - PR mode: the PR title + body (`gh pr view --json title,body`).
 
@@ -90,6 +95,24 @@ CODEX_BIN="$(which -a codex | grep -v '/.superconductor/' | head -n1)"
 *(Codex runtime: use Codex's native review for the bug pass and a review-only subagent to
 cover the seven lenses.)*
 
+**Plan mode — same swarm, different object.** The lenses review the *proposed approach*
+against the existing codebase rather than a diff:
+
+1. **Correctness** → feasibility: assumptions the codebase contradicts (data shapes, existing APIs, framework behavior), missing error/edge-case handling in the design.
+2. **Code Quality** → design quality: duplicated or derivable state, wrong abstraction boundaries, parameter sprawl in proposed interfaces.
+3. **Codebase Standards** → the plan must not commit to anything `review-double-checks.md` forbids, and must name the conventions it triggers (migrations, restarts, test strategy, …).
+4. **Code Reuse** → the highest-value plan lens: existing utilities/components/patterns the plan should use instead of building new; proposed file locations vs where similar files already live.
+5. **Security** → auth boundaries, data exposure, and trust decisions in the design.
+6. **Efficiency** → work designed in that needn't exist: N+1 access patterns, hot-path bloat, missing batching/concurrency.
+7. **Risks** → unchanged.
+
+Citations in plan mode: quote the plan line/step being flagged, plus `file:line` of existing
+code wherever the claim rests on the codebase. **Codex:** `codex review` only reads diffs —
+instead run one pass of `"$CODEX_BIN" exec` with the critique prompt + plan text piped via
+stdin (heredoc or temp file; never interpolated into the argv, which breaks on
+quotes/backticks and ARG_MAX), asking for wrong assumptions, missing pieces, and
+bugs-in-waiting; same one-pass/no-resume rule.
+
 ## Step 4 — Dedupe + kill ⇄ rescue debate
 
 Collect all findings and dedupe across sources (the same issue from N agents = one finding;
@@ -121,6 +144,7 @@ Now run the debate. **You (the orchestrator) are the kill critic.** Repeat:
 4. Loop until no actionable Agreed findings remain, or `max-iterations` (default 5).
 
 Risks (lens 7) and Contested items are never auto-fixed; they pass through to output.
+Plan mode never enters the fix loop.
 
 ## Step 6 — Output
 
@@ -131,6 +155,7 @@ Risks (lens 7) and Contested items are never auto-fixed; they pass through to ou
 - Actionable only — no praise, no "verified X" filler. A clean section is the prose line **"No issues found."** + one factual sentence on what was checked (it signals the section was actually reviewed; keep it visually distinct from bullets).
 - **Contested block:** each item flagged `⚖️ reviewer flagged → author dismissed — your call`, showing both the finding and the dismissal reasoning.
 - **Risks** are phrased as "document this in the PR description so a human can judge," not as code fixes.
+- **Plan mode** appends one extra section — **❓ Questions** (`?1`, `?2`…): blockers the plan's author can answer in a line (distinct from Risks, which need organizational judgment). Citations point at the plan, with `file:line` evidence where applicable.
 
 **Destination**
 
@@ -138,6 +163,7 @@ Risks (lens 7) and Contested items are never auto-fixed; they pass through to ou
 - **fix:** after the fix loop, push commits and post the final review automatically (PR mode, unless `local`).
 - **GitHub post** (when posting): one review via `gh pr review --comment` (never `--request-changes` / `--approve`), led by an attribution header noting it is automated and posted under the account owner's token but not authored by them. Include a hidden marker (`<!-- swarm-loop-review -->`) so a later run can supersede the prior bot review instead of stacking. fix mode appends a footer: `_Reviewed after N iteration(s); M findings auto-resolved._`
 - **local / local-diff:** print the review in the conversation; never post.
+- **plan:** print the review in the conversation; never post. End by offering to apply the Agreed findings to the plan (edit its file, or restate the revised plan).
 
 ## Step 7 — State (fix mode)
 
@@ -159,6 +185,9 @@ single fix pass (no re-review loop). Same output format and posting rules.
 ## Edge cases
 
 - Clean tree, no PR, not ahead → "nothing to review," stop.
+- `plan` with no path and no plan in the conversation → "no plan to review," stop.
+- `plan <path>` where the file doesn't exist → "plan file not found," stop — don't fall back to the conversation.
+- `plan` + `fix` → warn that plan review is collaborate-only, run collaborate.
 - No `review-double-checks.md` → skip lens 3 with a prominent warning; the rest run.
 - Codex binary not found → note it, proceed Claude-only.
 - `gh` unauthenticated / no PR permissions → fall back to `local` output, warn.
