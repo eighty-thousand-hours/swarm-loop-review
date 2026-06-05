@@ -1,9 +1,10 @@
 # swarm-loop-review
 
 A multi-agent code-review skill for Claude Code (and Codex). It fans out a **swarm** of
-reviewers over a PR or local diff, **debates its own findings** to convergence so it stops
-being noisy *and* stops silently dismissing the things that matter, and then either discusses
-them with you (**collaborate**) or fixes them and posts a single review to GitHub (**fix**).
+reviewers over a PR, a local diff, or an implementation plan, **debates its own findings**
+to convergence so it stops being noisy *and* stops silently dismissing the things that
+matter, and then either discusses them with you (**collaborate**) or fixes them and posts a
+single review to GitHub (**fix**; diffs only — plan review is collaborate-only).
 
 It is generic: it carries **no** project-specific rules. Each repo supplies its own
 `review-double-checks.md` (its codebase standards); everything else — correctness, security,
@@ -43,7 +44,7 @@ Then invoke with `/swarm-loop-review` (see `SKILL.md` for usage and flags).
 /swarm-loop-review [target] [mode] [flags]
 ```
 
-- **target:** PR url/number, or omit to auto-detect (open PR → uncommitted diff → branch-vs-base).
+- **target:** PR url/number, `plan [path]` for an implementation plan (collaborate-only), or omit to auto-detect (open PR → uncommitted diff → branch-vs-base).
 - **mode:** `collaborate` (default, never edits) · `fix` (autonomous: fix, push, post).
 - **flags:** `mini` (two reviewers, single round) · `local` (print, don't post) · `base <branch>` · `--diff` (force local diff even if a PR exists).
 
