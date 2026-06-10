@@ -16,6 +16,11 @@ efficiency, code-reuse, quality, risks — is universal and lives in the skill.
 2. **Kill ⇄ rescue debate.** A context-rich *kill* critic triages keep/dismiss; a fresh *rescue* critic argues back for wrongly-dropped findings. They loop until stable (max ~6 exchanges), producing three buckets: **Agreed**, **Contested** (your call), **Dismissed**.
 3. **Output.** collaborate presents (and offers to post/fix); fix applies net-positive changes, re-reviews to convergence, and posts one GitHub review. Contested items are surfaced explicitly so dismissals are never silent.
 
+On Claude Code, steps 1–2 run as a single deterministic script (`review-workflow.js`) via
+the Workflow tool — the script owns the lens prompts, disposition policy, and convergence
+loop. Runtimes without the Workflow tool (e.g. Codex) run the same pipeline manually per the
+fallback in `SKILL.md` Step 3.
+
 See `design/one-pager.html` for the interface + agent-flow diagram, and `design/spec.md` for
 the full specification.
 
@@ -51,7 +56,8 @@ Then invoke with `/swarm-loop-review` (see `SKILL.md` for usage and flags).
 ## Layout
 
 ```
-SKILL.md                              the skill (self-contained)
+SKILL.md                              the skill (orchestration + I/O contract)
+review-workflow.js                    the swarm + debate as a Workflow script (lens prompts, schemas, policy)
 review-double-checks.template.md      template for a consuming repo
 design/spec.md                        full specification
 design/one-pager.html                 interface + agent-flow diagram

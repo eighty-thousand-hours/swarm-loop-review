@@ -2,6 +2,7 @@
 name: swarm-loop-review
 description: Multi-agent swarm review of a PR, local diff, or implementation plan — fan out 7 reviewer lenses + Codex, debate the findings to convergence, then either discuss them (collaborate) or fix-and-post a single GitHub review (fix). Plan review is collaborate-only. Requires a review-double-checks.md at the target repo root for the codebase-standards lens.
 allowed-tools:
+  - Workflow
   - Task
   - Agent
   - Read
@@ -58,88 +59,78 @@ are ignored.
 
 ## Step 2 — Gather context (once)
 
-Collect, and pass into every agent's prompt so they don't re-fetch:
+Write a context bundle to `.swarm-loop-review/<id>/` (gitignored; `<id>` per Step 7) so every
+agent reads from disk instead of re-fetching:
 
-- The diff text and changed-file list (per Step 1) — or, in plan mode, the plan text (and its file path, if it has one).
-- The repo's `review-double-checks.md` (root). **If absent, note it and skip lens 3** — the rest still run.
-- PR mode: the PR title + body (`gh pr view --json title,body`).
+- `diff.patch` — the diff text (per Step 1). Plan mode: use the plan's own file path if it has
+  one, else write the plan text to `plan.md` here.
+- `pr.md` — PR title + body (`gh pr view --json title,body`). PR mode only.
+- Locate the repo's `review-double-checks.md` (root). **If absent, pass `null` and the
+  Standards lens is skipped** — the rest still run.
 
-## Step 3 — Round 0: review swarm (parallel)
+## Step 3 — Run the swarm (Workflow tool)
 
-Launch all of the following **concurrently** (one message, Agent tool). Every agent is
-**review-only** (makes no edits), may explore the wider codebase for context, ignores issues
-confined to test files, surfaces anything it is unsure about, and **cites `file:line` on
-every finding**.
+The fan-out, dedupe, and debate all run as one deterministic Workflow script —
+**`review-workflow.js`** in this skill's directory. The script is the **single source of
+truth** for the lens prompts (diff- and plan-mode variants), the schemas, the disposition
+policy, and the convergence loop; read it there rather than expecting them here. In brief:
+seven review-only lenses — Correctness, Code Quality, Codebase Standards, Code Reuse,
+Security, Efficiency, Risks-for-human-judgment — plus a Codex bug pass, every finding
+cited `file:line`.
 
-**Seven Claude lenses:**
+Invoke it with `scriptPath` = `<skill dir>/review-workflow.js` (resolve the skill dir's
+real path) and `args`:
 
-1. **Correctness** — bugs that will break: logic errors, off-by-ones, bad edge cases, races, null/undefined throws, wrong data-shape/contract assumptions, missing error handling at boundaries. Not style; not security.
-2. **Code Quality** — redundant/derivable state, parameter sprawl, near-duplicate blocks, leaky abstractions, stringly-typed code, WHAT-narrating comments, needless JSX nesting, nested ternaries / over-clever one-liners.
-3. **Codebase Standards** — violations of the repo's `review-double-checks.md` (passed in Step 2). **No built-in rules of its own.** Skip this lens entirely if the file is absent.
-4. **Code Reuse** — search the codebase for existing utilities the change should reuse instead of new code; flag duplicated functionality and hand-rolled logic. Spends most of its time exploring, not reading the diff.
-5. **Security** — only >80%-confidence exploitable issues. Injection, auth/authz bypass, secrets/crypto, RCE/XSS (React is safe without `dangerouslySetInnerHTML`), sensitive-data exposure. Exclude DoS, rate-limiting, outdated deps, theoretical races; env vars and CLI flags are trusted; client-side needs no auth checks.
-6. **Efficiency** — performance and resource use: redundant computation, repeated reads, N+1 patterns, missed concurrency, hot-path bloat, recurring no-op state updates, TOCTOU existence checks, memory/listener leaks, overly broad reads.
-7. **Risks (for human judgment)** — changes needing organizational context: perf/complexity shifts, interface/format/contract changes, behavioral changes (defaults, error semantics, security boundaries), new dependencies/coupling, scope changes. Only surface what the PR description does **not** already cover. These are **not** code-fix findings — they route to the human (Step 6).
-
-**Codex — independent bug-spotter.** A non-Claude second opinion focused on bugs. The
-Superconductor wrapper can hang non-interactively, so call the real binary:
-
-```bash
-CODEX_BIN="$(which -a codex | grep -v '/.superconductor/' | head -n1)"
-"$CODEX_BIN" review [--uncommitted | --base <branch>]
+```jsonc
+{
+  "repoRoot": "<abs path>",
+  "targetPath": "<abs path to diff.patch, or the plan file>",   // from Step 2
+  "planMode": false,
+  "mini": false,
+  "doubleChecksPath": "<abs path>" /* or null → Standards lens skipped */,
+  "prContextPath": "<abs path to pr.md>" /* or null */,
+  "codexInvocation": "<shell command, see below>" /* or null → Claude-only */,
+  "dismissed": [],            // Step 5 carries this forward between iterations
+  "maxRescuePasses": 6        // 1 in mini mode
+}
 ```
 
-(Re-resolve `$CODEX_BIN` each call — bash state doesn't persist.) One pass only; no
-`resume`/follow-up. If no Codex binary is found, note it and proceed Claude-only.
+**Composing `codexInvocation`** (the script's Codex agent resolves the real binary itself —
+filtering out the hangs-prone `/.superconductor/` wrapper — and degrades to Claude-only with
+a note when none is found; one pass only, never `resume`):
 
-*(Codex runtime: use Codex's native review for the bug pass and a review-only subagent to
-cover the seven lenses.)*
+- Diff mode: `"$CODEX_BIN" review --base <base>` (or `--uncommitted` for a dirty-tree local
+  diff).
+- Plan mode: `codex review` only reads diffs — instead one pass of `"$CODEX_BIN" exec` with
+  the critique prompt + plan text piped via stdin (heredoc or temp file; **never**
+  interpolated into the argv, which breaks on quotes/backticks and ARG_MAX), asking for
+  wrong assumptions, missing pieces, and bugs-in-waiting.
 
-**Plan mode — same swarm, different object.** The lenses review the *proposed approach*
-against the existing codebase rather than a diff:
+**Fallback — no Workflow tool in the runtime (e.g. Codex):** run the same pipeline by hand.
+Fan out the lenses defined in `review-workflow.js` as concurrent review-only subagents (use
+Codex's native review for the bug pass), then run Step 4's debate yourself: you are the kill
+critic; a **fresh** subagent per rescue pass argues to restore your dismissals and ends with
+`OBJECTIONS: <ids>` or `OBJECTIONS: none`; terminate on `OBJECTIONS: none` or after
+`maxRescuePasses`. Apply the script's disposition policy verbatim.
 
-1. **Correctness** → feasibility: assumptions the codebase contradicts (data shapes, existing APIs, framework behavior), missing error/edge-case handling in the design.
-2. **Code Quality** → design quality: duplicated or derivable state, wrong abstraction boundaries, parameter sprawl in proposed interfaces.
-3. **Codebase Standards** → the plan must not commit to anything `review-double-checks.md` forbids, and must name the conventions it triggers (migrations, restarts, test strategy, …).
-4. **Code Reuse** → the highest-value plan lens: existing utilities/components/patterns the plan should use instead of building new; proposed file locations vs where similar files already live.
-5. **Security** → auth boundaries, data exposure, and trust decisions in the design.
-6. **Efficiency** → work designed in that needn't exist: N+1 access patterns, hot-path bloat, missing batching/concurrency.
-7. **Risks** → unchanged.
+## Step 4 — Dedupe + kill ⇄ rescue debate (inside the workflow)
 
-Citations in plan mode: quote the plan line/step being flagged, plus `file:line` of existing
-code wherever the claim rests on the codebase. **Codex:** `codex review` only reads diffs —
-instead run one pass of `"$CODEX_BIN" exec` with the critique prompt + plan text piped via
-stdin (heredoc or temp file; never interpolated into the argv, which breaks on
-quotes/backticks and ARG_MAX), asking for wrong assumptions, missing pieces, and
-bugs-in-waiting; same one-pass/no-resume rule.
+Step 3's workflow already does this — findings are deduped across sources (corroboration
+noted; agreement raises confidence), then a kill-critic agent triages keep/dismiss and fresh
+rescuer agents argue restorations until a rescue pass raises no objections or the pass cap
+is hit. **Do not re-litigate the debate from outside;** the disposition policy lives in the
+script. Anything still disputed when the cap is hit comes back **Contested**, not silently
+dismissed.
 
-## Step 4 — Dedupe + kill ⇄ rescue debate
-
-Collect all findings and dedupe across sources (the same issue from N agents = one finding;
-note the corroboration — agreement raises confidence).
-
-Now run the debate. **You (the orchestrator) are the kill critic.** Repeat:
-
-1. **Triage (you):** mark every finding **keep** or **dismiss** with a one-line reason. First pass: the full deduped list. Later passes: revise in light of the rescuer's objections — you needn't concede, but reconsider each.
-2. **Rescue pass:** spawn a **fresh** subagent (new each pass — its only inputs are the findings + your current keep/dismiss decisions; not a re-run of the seven lenses). It argues to **restore** anything you dismissed that matters — especially the default-fix categories (conventions, comments) and cheap, net-positive nits. It must end its reply with a line `OBJECTIONS: <finding ids it still disputes>` or `OBJECTIONS: none`.
-3. **Terminate** when the rescuer returns `OBJECTIONS: none` — you are in agreement — **or** when you have run **6 rescue passes**, whichever comes first. Otherwise loop back to step 1.
-
-**Do not stop after a single pass.** Keep going back and forth until the rescuer has no objections or all 6 passes are spent. Anything the rescuer still disputes after 6 passes is **Contested**, not silently dismissed.
-
-**Disposition policy:**
-
-- No blanket default-dismiss or default-fix. Use judgment, and weigh **cost vs benefit — never benefit alone** (a tiny-benefit change is still worth it when its cost is ~zero; a large-benefit change isn't when it's expensive, risky, or out of scope).
-- **Default to fixing** the two areas the swarm habitually *under*-acts on: (a) any violation of `review-double-checks.md` (the codebase conventions); (b) over-explaining / change-narrating comments. This is a *default fix*, not always-fix — judgment can still dismiss with good reason.
-- Nits elsewhere: keep only when the fix is clearly net-positive (cheap *and* genuinely clearer).
-- **Resolve scope here, don't escalate reflexively.** Use cost-benefit to decide whether an out-of-scope-ish item is worth doing. Only items still genuinely disputed after the debate become Contested — keep that bucket small.
-
-**Result — three buckets:** **Agreed** (keep / fix), **Contested** (still disputed → human),
-**Dismissed** (dropped, and remembered so re-reviews don't resurface them).
+**Result — three buckets** (the workflow's return value): **Agreed** (keep / fix),
+**Contested** (still disputed → human), **Dismissed** (dropped, with reasons — remember it
+so re-reviews don't resurface them). Plus `notes` (coverage caveats — skipped lenses,
+failed reviewers, missing Codex) which must surface in the output summary.
 
 ## Step 5 — Fix loop (fix mode only)
 
 1. Apply Agreed findings as code changes; commit per repo convention (`Co-Authored-By: Claude <model>`).
-2. Re-run Round 0 on the changed code (a fresh swarm), passing the dismissed-set forward so dropped findings are suppressed (semantic match, not string match).
+2. Re-run Step 3's workflow on the changed code (a fresh invocation — regenerate `diff.patch`), carrying the accumulated dismissed-set forward via `args.dismissed` so dropped findings are suppressed (semantic match, not string match).
 3. **Oscillation guard:** if every remaining actionable finding is already in the dismissed-set, stop.
 4. Loop until no actionable Agreed findings remain, or `max-iterations` (default 5).
 
@@ -178,8 +169,9 @@ End a fix run with a changelog table (Iter / ID / Severity / Finding / Action) a
 
 ## Mini mode
 
-Fast path: **two reviewers only** — one Claude reviewer told to cover *all* seven lenses in a
-single pass, plus Codex. **One** kill→rescue exchange (no convergence loop); in fix mode, a
+Fast path: set `mini: true` and `maxRescuePasses: 1` in the workflow args. The script then
+runs **two reviewers only** — one Claude reviewer covering *all* seven lenses in a single
+pass, plus Codex — and **one** kill→rescue exchange (no convergence loop). In fix mode, a
 single fix pass (no re-review loop). Same output format and posting rules.
 
 ## Edge cases
@@ -189,7 +181,8 @@ single fix pass (no re-review loop). Same output format and posting rules.
 - `plan <path>` where the file doesn't exist → "plan file not found," stop — don't fall back to the conversation.
 - `plan` + `fix` → warn that plan review is collaborate-only, run collaborate.
 - No `review-double-checks.md` → skip lens 3 with a prominent warning; the rest run.
-- Codex binary not found → note it, proceed Claude-only.
+- Codex binary not found → the workflow's Codex agent notes it and the run proceeds Claude-only.
+- Workflow tool unavailable (non-Claude runtime) → Step 3's manual fallback path.
 - `gh` unauthenticated / no PR permissions → fall back to `local` output, warn.
 - local-diff + `fix` → fixes the working tree but does not push (no PR target) and posts nothing.
 - Very large diff → proceed, but state in the summary if coverage was bounded.
