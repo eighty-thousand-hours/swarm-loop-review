@@ -82,14 +82,23 @@ every finding**.
 7. **Risks (for human judgment)** — changes needing organizational context: perf/complexity shifts, interface/format/contract changes, behavioral changes (defaults, error semantics, security boundaries), new dependencies/coupling, scope changes. Only surface what the PR description does **not** already cover. These are **not** code-fix findings — they route to the human (Step 6).
 
 **Codex — independent bug-spotter.** A non-Claude second opinion focused on bugs. The
-Superconductor wrapper can hang non-interactively, so call the real binary:
+Superconductor wrapper can hang non-interactively, so call the real binary, and capture the
+review to a file with `-o`:
 
 ```bash
 CODEX_BIN="$(which -a codex | grep -v '/.superconductor/' | head -n1)"
-"$CODEX_BIN" review [--uncommitted | --base <branch>]
+CODEX_OUT="$(mktemp)"
+"$CODEX_BIN" exec review [--uncommitted | --base <branch>] -o "$CODEX_OUT"
 ```
 
-(Re-resolve `$CODEX_BIN` each call — bash state doesn't persist.) One pass only; no
+**Read the review from `"$CODEX_OUT"`, never from stdout.** `codex` streams its **entire agent
+session** — a config banner, then every tool call it makes (file reads, greps, scratch
+scripts) and each command's output — to stdout, and prints the actual review only as the final
+message. Reading/skimming/`tail`-ing stdout makes the review look like tool noise and it gets
+silently discarded; `-o` writes just that final message to the file. A non-empty `$CODEX_OUT`
+is the review (in both the found-issues and the clean cases — exit code is 0 either way); an
+empty/absent file is the only true "Codex produced no review" signal. (Re-resolve `$CODEX_BIN`
+and re-create `$CODEX_OUT` each call — bash state doesn't persist.) One pass only; no
 `resume`/follow-up. If no Codex binary is found, note it and proceed Claude-only.
 
 *(Codex runtime: use Codex's native review for the bug pass and a review-only subagent to
@@ -108,10 +117,11 @@ against the existing codebase rather than a diff:
 
 Citations in plan mode: quote the plan line/step being flagged, plus `file:line` of existing
 code wherever the claim rests on the codebase. **Codex:** `codex review` only reads diffs —
-instead run one pass of `"$CODEX_BIN" exec` with the critique prompt + plan text piped via
-stdin (heredoc or temp file; never interpolated into the argv, which breaks on
+instead run one pass of `"$CODEX_BIN" exec -o "$CODEX_OUT" -` with the critique prompt + plan
+text piped via stdin (heredoc or temp file; never interpolated into the argv, which breaks on
 quotes/backticks and ARG_MAX), asking for wrong assumptions, missing pieces, and
-bugs-in-waiting; same one-pass/no-resume rule.
+bugs-in-waiting; same one-pass/no-resume rule. **Read the critique from `"$CODEX_OUT"`, not
+stdout** — `exec` streams the same full session transcript as `review` does.
 
 ## Step 4 — Dedupe + kill ⇄ rescue debate
 
@@ -189,7 +199,7 @@ single fix pass (no re-review loop). Same output format and posting rules.
 - `plan <path>` where the file doesn't exist → "plan file not found," stop — don't fall back to the conversation.
 - `plan` + `fix` → warn that plan review is collaborate-only, run collaborate.
 - No `review-double-checks.md` → skip lens 3 with a prominent warning; the rest run.
-- Codex binary not found → note it, proceed Claude-only.
+- Codex binary not found → note it, proceed Claude-only. An **empty `-o` file** (binary ran, found nothing) is a real clean result, not a read failure — don't fall back to scraping stdout to "recover" findings.
 - `gh` unauthenticated / no PR permissions → fall back to `local` output, warn.
 - local-diff + `fix` → fixes the working tree but does not push (no PR target) and posts nothing.
 - Very large diff → proceed, but state in the summary if coverage was bounded.
