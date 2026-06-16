@@ -81,14 +81,15 @@ Launch all of the following concurrently. Every agent is **review-only** (no edi
 6. **Efficiency** — performance and resource use: redundant computation, repeated reads, N+1 patterns, missed concurrency, hot-path bloat, recurring no-op state updates, TOCTOU existence checks, memory/listener leaks, overly broad reads.
 7. **Risks (for human judgment)** — changes needing organizational context: perf/complexity/resource shifts, interface/format/contract changes, behavioral changes (defaults, error semantics, security boundaries), new dependencies/coupling, scope changes. For each, check whether the PR description already covers it; only surface what the description leaves unaddressed. These are **not** code-fix findings — they route to the human (§3.4).
 
-**Codex — independent bug-spotter.** A non-Claude second opinion focused on bugs. The Superconductor wrapper can hang non-interactively, so resolve the real binary:
+**Codex — independent bug-spotter.** A non-Claude second opinion focused on bugs. The Superconductor wrapper can hang non-interactively, so resolve the real binary and capture the review to a file with `-o`:
 
 ```bash
 CODEX_BIN="$(which -a codex | grep -v '/.superconductor/' | head -n1)"
-"$CODEX_BIN" review [--uncommitted | --base <branch>]
+CODEX_OUT="$(mktemp)"
+"$CODEX_BIN" exec review [--uncommitted | --base <branch>] -o "$CODEX_OUT"
 ```
 
-(Re-resolve `$CODEX_BIN` each call — bash state doesn't persist.) One pass only; no `resume`/follow-up — the standards checklist is already covered by lens 3.
+**Read the review from `"$CODEX_OUT"`, never from stdout.** `codex` streams its entire agent session — config banner, then every tool call (file reads, greps, scratch scripts) and its output — to stdout, and prints the review only as the final message; reading stdout makes the review look like tool noise and it gets silently discarded. `-o` writes just that final message. A non-empty file is the review (found-issues and clean cases both exit 0); an empty/absent file is the only true "no review" signal. (Re-resolve `$CODEX_BIN` and re-create `$CODEX_OUT` each call — bash state doesn't persist.) One pass only; no `resume`/follow-up — the standards checklist is already covered by lens 3.
 
 ### 3.2 Dedupe + kill ⇄ rescue debate
 Collect all findings and dedupe across sources (the same issue from N agents = one finding; note the corroboration — agreement raises confidence).

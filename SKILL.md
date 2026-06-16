@@ -96,15 +96,19 @@ real path) and `args`:
 ```
 
 **Composing `codexInvocation`** (the script's Codex agent resolves the real binary itself —
-filtering out the hangs-prone `/.superconductor/` wrapper — and degrades to Claude-only with
-a note when none is found; one pass only, never `resume`):
+filtering out the hangs-prone `/.superconductor/` wrapper — creates `$CODEX_OUT` and reads the
+review from that file rather than stdout, and degrades to Claude-only with a note when no
+binary is found; one pass only, never `resume`). Always use `exec` with `-o "$CODEX_OUT"`:
+`codex` streams its whole agent session (banner + every tool call and its output) to stdout
+and writes only the final review to the `-o` file, so reading stdout discards the review as
+tool noise.
 
-- Diff mode: `"$CODEX_BIN" review --base <base>` (or `--uncommitted` for a dirty-tree local
-  diff).
-- Plan mode: `codex review` only reads diffs — instead one pass of `"$CODEX_BIN" exec` with
-  the critique prompt + plan text piped via stdin (heredoc or temp file; **never**
-  interpolated into the argv, which breaks on quotes/backticks and ARG_MAX), asking for
-  wrong assumptions, missing pieces, and bugs-in-waiting.
+- Diff mode: `"$CODEX_BIN" exec review --base <base> -o "$CODEX_OUT"` (or `--uncommitted` for
+  a dirty-tree local diff).
+- Plan mode: `codex review` only reads diffs — instead one pass of `"$CODEX_BIN" exec -o
+  "$CODEX_OUT" -` with the critique prompt + plan text piped via stdin (heredoc or temp file;
+  **never** interpolated into the argv, which breaks on quotes/backticks and ARG_MAX), asking
+  for wrong assumptions, missing pieces, and bugs-in-waiting.
 
 **Fallback — no Workflow tool in the runtime (e.g. Codex):** run the same pipeline by hand.
 Fan out the lenses defined in `review-workflow.js` as concurrent review-only subagents (use
@@ -181,7 +185,7 @@ single fix pass (no re-review loop). Same output format and posting rules.
 - `plan <path>` where the file doesn't exist → "plan file not found," stop — don't fall back to the conversation.
 - `plan` + `fix` → warn that plan review is collaborate-only, run collaborate.
 - No `review-double-checks.md` → skip lens 3 with a prominent warning; the rest run.
-- Codex binary not found → the workflow's Codex agent notes it and the run proceeds Claude-only.
+- Codex binary not found → the workflow's Codex agent notes it and the run proceeds Claude-only. An **empty `-o` file** (binary ran, found nothing) is a real clean result, not a read failure — never scrape stdout to "recover" findings.
 - Workflow tool unavailable (non-Claude runtime) → Step 3's manual fallback path.
 - `gh` unauthenticated / no PR permissions → fall back to `local` output, warn.
 - local-diff + `fix` → fixes the working tree but does not push (no PR target) and posts nothing.
