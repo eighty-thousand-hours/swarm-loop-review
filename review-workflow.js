@@ -315,34 +315,27 @@ if (activeLenses.length < LENSES.length) {
   log('⚠️ no review-double-checks.md — Codebase Standards lens skipped')
 }
 
+// Wrap each reviewer so a single agent failure logs and drops to null rather
+// than rejecting the whole parallel() barrier — the partial-failure handling
+// below then accounts for the missing reviewer.
+const finder = (prompt, label, source) => () =>
+  agent(prompt, { label, phase: 'Review', schema: FINDINGS_SCHEMA })
+    .then((r) => r && { source, ...r })
+    .catch((err) => {
+      log(`${source} reviewer errored: ${(err && err.message) || err}`)
+      return null
+    })
+
 const finderThunks = []
 if (a.mini) {
-  finderThunks.push(() =>
-    agent(combinedPrompt(activeLenses), {
-      label: 'lens:combined',
-      phase: 'Review',
-      schema: FINDINGS_SCHEMA,
-    }).then((r) => r && { source: 'combined', ...r }),
-  )
+  finderThunks.push(finder(combinedPrompt(activeLenses), 'lens:combined', 'combined'))
 } else {
   for (const lens of activeLenses) {
-    finderThunks.push(() =>
-      agent(lensPrompt(lens), {
-        label: `lens:${lens.key}`,
-        phase: 'Review',
-        schema: FINDINGS_SCHEMA,
-      }).then((r) => r && { source: lens.key, ...r }),
-    )
+    finderThunks.push(finder(lensPrompt(lens), `lens:${lens.key}`, lens.key))
   }
 }
 if (a.codexInvocation) {
-  finderThunks.push(() =>
-    agent(codexPrompt(), {
-      label: 'codex',
-      phase: 'Review',
-      schema: FINDINGS_SCHEMA,
-    }).then((r) => r && { source: 'codex', ...r }),
-  )
+  finderThunks.push(finder(codexPrompt(), 'codex', 'codex'))
 } else {
   log('Codex pass disabled (no invocation supplied) — Claude-only review')
 }
@@ -360,7 +353,7 @@ for (const review of reviews) {
 }
 
 const rawFindings = reviews.flatMap((review) =>
-  review.findings.map((f) => ({ ...f, source: review.source })),
+  (review.findings || []).map((f) => ({ ...f, source: review.source })),
 )
 log(`${rawFindings.length} raw finding(s) from ${reviews.length} reviewer(s)`)
 
@@ -382,7 +375,7 @@ const deduped = await agent(
   { label: 'dedupe', phase: 'Debate', schema: DEDUPED_SCHEMA },
 )
 if (!deduped) throw new Error('dedupe agent failed')
-const findings = deduped.findings
+const findings = deduped.findings || []
 log(`${findings.length} finding(s) after dedupe`)
 
 let criticOut = await agent(criticPrompt(findings, null, null), {
@@ -391,7 +384,7 @@ let criticOut = await agent(criticPrompt(findings, null, null), {
   schema: CRITIC_SCHEMA,
 })
 if (!criticOut) throw new Error('kill critic failed on the first pass')
-let decisions = criticOut.decisions
+let decisions = criticOut.decisions || []
 
 let contestedIds = []
 let rescuePasses = 0
@@ -408,9 +401,9 @@ for (let pass = 1; pass <= a.maxRescuePasses; pass++) {
   }
   // Rescuers can only restore dismissals; objections to kept findings are noise.
   const dismissedIds = new Set(
-    decisions.filter((d) => d.verdict === 'dismiss').map((d) => d.id),
+    decisions.filter((d) => d && d.verdict === 'dismiss').map((d) => d.id),
   )
-  const objections = rescue.objections.filter((o) => dismissedIds.has(o.id))
+  const objections = (rescue.objections || []).filter((o) => o && dismissedIds.has(o.id))
   log(`rescue pass ${pass}: ${objections.length} objection(s)`)
   if (objections.length === 0) break
   if (pass === a.maxRescuePasses) {
@@ -427,10 +420,12 @@ for (let pass = 1; pass <= a.maxRescuePasses; pass++) {
     contestedIds = objections.map((o) => o.id)
     break
   }
-  decisions = criticOut.decisions
+  decisions = criticOut.decisions || []
 }
 
-const decisionById = new Map(decisions.map((d) => [d.id, d]))
+const decisionById = new Map(
+  decisions.filter((d) => d && d.id).map((d) => [d.id, d]),
+)
 const contestedSet = new Set(contestedIds)
 const agreed = []
 const contested = []
