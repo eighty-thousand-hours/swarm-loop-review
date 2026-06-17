@@ -33,13 +33,19 @@ const LENSES = [
     key: 'correctness',
     name: 'Correctness',
     diff: 'Bugs that will break: logic errors, off-by-ones, bad edge cases, races, null/undefined throws, wrong data-shape/contract assumptions, missing error handling at boundaries. Not style; not security.',
-    plan: 'Feasibility: assumptions the codebase contradicts (data shapes, existing APIs, framework behavior), missing error/edge-case handling in the design.',
+    plan: 'Feasibility: assumptions the codebase contradicts (data shapes, existing APIs, framework behavior), missing error/edge-case handling in the design. Read the relevant source before asserting; rate each assumption you flag by confidence (Confident / Likely / Unclear) and state the concrete consequence if it is wrong. Catch scope-reduction hiding behind goal-language — steps that say "v1", "simplified", "hardcoded for now", "placeholder", "stub", or "future enhancement" while the stated goal demands the whole thing.',
   },
   {
     key: 'quality',
     name: 'Code Quality',
     diff: 'Redundant/derivable state, parameter sprawl, near-duplicate blocks, leaky abstractions, stringly-typed code, WHAT-narrating comments, needless JSX nesting, nested ternaries / over-clever one-liners.',
     plan: 'Design quality: duplicated or derivable state, wrong abstraction boundaries, parameter sprawl in proposed interfaces.',
+  },
+  {
+    key: 'linus',
+    name: 'Linus Torvalds',
+    diff: "Taste, in the Torvalds sense — the structural smells the tactical Code Quality lens misses. Special cases a better data structure or reframing would erase (the \"good taste\" refactor, not a one-liner cleanup); complexity that's really the wrong data model — bad code is usually a symptom of bad data structures; over-engineering — speculative generality and abstraction layers that don't earn their keep, solve the problem you have; and \"don't break userspace\" — changes that silently break existing callers, on-disk/serialized formats, public APIs, or CLI/flag behavior. Leave deliberate, documented contract changes to the Risks lens; flag the accidental break and the structural smell.",
+    plan: "Taste, in the Torvalds sense. Special-casing the design bakes in that a cleaner data model would eliminate; complexity that's a symptom of the wrong data structure (fix the data, not the code around it); over-engineering — speculative abstraction the present problem doesn't need; and \"don't break userspace\" — anything that would break existing callers, formats, or public interfaces without saying so. Leave deliberate, documented contract changes to the Risks lens.",
   },
   {
     key: 'standards',
@@ -66,12 +72,42 @@ const LENSES = [
     plan: "Work designed in that needn't exist: N+1 access patterns, hot-path bloat, missing batching/concurrency.",
   },
   {
+    key: 'tests',
+    name: 'Test Coverage & Parity',
+    diff: "Whether the change is actually verified, and whether its tests mirror production. Flag: new/changed code paths and error/failure branches left untested (happy-path-only); tests that are flaky by construction (real sleeps, wall-clock/timezone dependence, ordering or shared-fixture coupling, port/network races); and over-mocking that breaks production parity — a mock of the very dependency a test exists to exercise tests the mock, not the system. The canonical case: stubbing the LLM when production calls a real model — prefer real-model/integration tests; a mock needs a real reason (irreducible nondeterminism, prohibitive cost/latency, an unsafe external side effect). Also flag missing coverage of the dependency-down/degraded paths the change introduces or relies on (service down, timeout, rate-limit, malformed/empty response). A passing test is not itself coverage — the assertion is the evidence, a green run is just narration: flag tests whose assertion was weakened to pass (asserting less than the code promises), \"wired-but-hollow\" tests that pass against a mock returning the empty/static shape production never returns, and a declared test/eval harness that is never actually invoked.",
+    plan: "Whether the plan says how the work will be verified — at the level where the value is (e2e/integration, not just units). Flag: a test strategy that leans on mocks where production parity matters (especially mocking the LLM when real-model behavior is the point); failure modes left untested (dependency down, timeout, rate-limit, malformed/empty output); and flakiness designed in (timing, ordering, shared fixtures). Real-dependency tests are the default; the plan must justify any mock of the system under test.",
+  },
+  {
     key: 'risks',
     name: 'Risks (for human judgment)',
     diff: 'Changes needing organizational context: perf/complexity shifts, interface/format/contract changes, behavioral changes (defaults, error semantics, security boundaries), new dependencies/coupling, scope changes. Only surface what the PR description does NOT already cover. These are not code-fix findings — they route to the human.',
     plan: 'Changes needing organizational context: perf/complexity shifts, contract changes, behavioral changes, new dependencies/coupling, scope changes. Only surface what the plan does not already cover. These route to the human.',
   },
 ]
+
+// Default-mode fan-out groups the lenses into fewer reviewer agents — one agent per group,
+// each covering its lenses in a single pass and tagging every finding with its lens key. The
+// lens taxonomy is unchanged (output sections, disposition policy, the tests carve-out, Risks
+// routing all key off lens, not group); only the agent count shrinks. Mini mode collapses
+// further to one combined reviewer. A lens earns its own group when it needs a different
+// working mode (Code Reuse explores the repo; Tests reads test files), a stricter precision bar
+// (Security), or different output routing (Risks); the rest are "read the diff and judge" and
+// share two reviewers.
+const GROUPS = [
+  { key: 'correctness-perf', name: 'Correctness & Performance', lenses: ['correctness', 'efficiency'] },
+  { key: 'craft', name: 'Craft', lenses: ['quality', 'linus', 'standards'] },
+  { key: 'reuse', name: 'Code Reuse', lenses: ['reuse'] },
+  { key: 'security', name: 'Security', lenses: ['security'] },
+  { key: 'tests', name: 'Test Coverage & Parity', lenses: ['tests'] },
+  { key: 'risks', name: 'Risks (for human judgment)', lenses: ['risks'] },
+]
+// Invariant: every lens belongs to exactly one group. Self-heal an unmapped lens into its own
+// group rather than leave it silently un-reviewed (e.g. a lens added above but not mapped here).
+for (const lens of LENSES) {
+  if (!GROUPS.some((g) => g.lenses.includes(lens.key))) {
+    GROUPS.push({ key: lens.key, name: lens.name, lenses: [lens.key] })
+  }
+}
 
 const FINDINGS_SCHEMA = {
   type: 'object',
@@ -188,7 +224,7 @@ const dismissedBlock =
     ? `Previously dismissed findings — do NOT resurface anything semantically matching these (semantic match, not string match):\n${a.dismissed.map((d) => `- ${d}`).join('\n')}`
     : ''
 
-function reviewerPreamble(lensLine) {
+function reviewerPreamble(lensLine, testsInScope) {
   return [
     `You are one reviewer in a multi-agent review swarm examining a ${objectNoun}.`,
     '',
@@ -200,12 +236,15 @@ function reviewerPreamble(lensLine) {
     'Rules:',
     '- Review-only: make no edits anywhere.',
     '- You may explore the wider repo for context (Read/Grep/Glob/Bash).',
-    '- Ignore issues confined to test files.',
+    testsInScope
+      ? '- Test files are in scope for the Test Coverage & Parity lens — missing/weak/flaky tests, over-mocking, and untested failure modes are findings, and a missing test is itself a finding (cite the untested file:line). Every OTHER lens still ignores issues confined to test files.'
+      : '- Ignore issues confined to test files.',
     '- Surface anything you are unsure about with "unsure": true rather than staying silent.',
     a.planMode
       ? '- Every finding cites the plan line/step being flagged, plus file:line of existing code wherever the claim rests on the codebase.'
       : '- Every finding cites file:line. Mandatory.',
     '- Actionable findings only — no praise, no "verified X" filler.',
+    '- Severity tracks impact, not tone: do not soften a real issue down to a suggestion/nit (or stay silent) to seem agreeable. Under-calling a genuine issue is as much an error as a false positive.',
     dismissedBlock,
   ]
     .filter((line) => line !== '')
@@ -215,6 +254,7 @@ function reviewerPreamble(lensLine) {
 function lensPrompt(lens) {
   return reviewerPreamble(
     `Your lens — ${lens.name}: ${lens[objectMode]}\nTag every finding with lens "${lens.key}".`,
+    lens.key === 'tests',
   )
 }
 
@@ -222,6 +262,7 @@ function combinedPrompt(lenses) {
   const lensList = lenses.map((l) => `- ${l.name} ("${l.key}"): ${l[objectMode]}`).join('\n')
   return reviewerPreamble(
     `You cover ALL of the following lenses in a single pass; tag each finding with its lens key:\n${lensList}`,
+    lenses.some((l) => l.key === 'tests'),
   )
 }
 
@@ -262,6 +303,7 @@ const DISPOSITION_POLICY = [
   '- Nits elsewhere: keep only when the fix is clearly net-positive (cheap AND genuinely clearer).',
   '- Resolve scope here, do not escalate reflexively. Only genuinely disputed items should survive to the human.',
   '- "risks"-lens findings are for the human, not code fixes: keep them unless the PR description / plan already covers them.',
+  '- Severity is not a politeness dial: never downgrade issue→suggestion→nit, or dismiss a real finding, to seem less harsh or avoid conflict. Re-rank by real impact only — quietly under-calling a genuine issue is as much a defect as a false positive.',
 ].join('\n')
 
 function criticPrompt(findings, priorDecisions, rescue) {
@@ -327,12 +369,21 @@ const finder = (prompt, label, source) => () =>
       return null
     })
 
+const activeKeys = new Set(activeLenses.map((l) => l.key))
 const finderThunks = []
 if (a.mini) {
   finderThunks.push(finder(combinedPrompt(activeLenses), 'lens:combined', 'combined'))
 } else {
-  for (const lens of activeLenses) {
-    finderThunks.push(finder(lensPrompt(lens), `lens:${lens.key}`, lens.key))
+  // One reviewer per group; a single-lens group gets the focused lens prompt, a multi-lens
+  // group the combined prompt. Lenses dropped by activeLenses (e.g. Standards with no
+  // review-double-checks.md) fall out here, and an all-dropped group is skipped entirely.
+  for (const group of GROUPS) {
+    const groupLenses = group.lenses
+      .map((k) => LENSES.find((l) => l.key === k))
+      .filter((l) => l && activeKeys.has(l.key))
+    if (groupLenses.length === 0) continue
+    const prompt = groupLenses.length === 1 ? lensPrompt(groupLenses[0]) : combinedPrompt(groupLenses)
+    finderThunks.push(finder(prompt, `group:${group.key}`, group.key))
   }
 }
 if (a.codexInvocation) {
@@ -369,7 +420,7 @@ phase('Debate')
 const deduped = await agent(
   [
     'Dedupe these review findings from multiple reviewers. The same underlying issue reported by N reviewers becomes ONE finding listing all its sources (corroboration raises confidence — note it in the merged detail). Distinct issues at the same location stay separate.',
-    'Keep the strongest phrasing and the most precise citation; preserve the lens of the primary report; assign ids F1, F2, … in input order.',
+    'Keep the strongest phrasing and the most precise citation; preserve the lens of the primary report; assign ids F1, F2, … in input order. Never soften a merged finding below the highest severity any reviewer gave it.',
     '',
     `Findings:\n${JSON.stringify(rawFindings)}`,
   ].join('\n'),

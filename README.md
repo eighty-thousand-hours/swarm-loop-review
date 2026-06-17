@@ -8,11 +8,11 @@ single review to GitHub (**fix**; diffs only — plan review is collaborate-only
 
 It is generic: it carries **no** project-specific rules. Each repo supplies its own
 `review-double-checks.md` (its codebase standards); everything else — correctness, security,
-efficiency, code-reuse, quality, risks — is universal and lives in the skill.
+efficiency, code-reuse, quality, taste, test coverage & parity, risks — is universal and lives in the skill.
 
 ## How it works
 
-1. **Round 0 — swarm.** Seven Claude lenses (Correctness, Code Quality, Codebase Standards, Code Reuse, Security, Efficiency, Risks) + Codex as an independent bug-spotter, all in parallel.
+1. **Round 0 — swarm.** Nine review lenses (Correctness, Code Quality, Linus Torvalds, Codebase Standards, Code Reuse, Security, Efficiency, Test Coverage & Parity, Risks) + Codex as an independent bug-spotter, all in parallel. To control cost the lenses are **grouped into six reviewer agents** by default (Correctness+Efficiency together; Code Quality+Linus+Standards together; Code Reuse, Security, Tests, and Risks solo) — same nine output sections, fewer agents. Mini mode runs one combined reviewer + Codex.
 2. **Kill ⇄ rescue debate.** A context-rich *kill* critic triages keep/dismiss; a fresh *rescue* critic argues back for wrongly-dropped findings. They loop until stable (max ~6 exchanges), producing three buckets: **Agreed**, **Contested** (your call), **Dismissed**.
 3. **Output.** collaborate presents (and offers to post/fix); fix applies net-positive changes, re-reviews to convergence, and posts one GitHub review. Contested items are surfaced explicitly so dismissals are never silent.
 

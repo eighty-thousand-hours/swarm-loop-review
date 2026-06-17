@@ -207,10 +207,10 @@ flowchart TD
   LP(["Print to conversation"])
   GH(["Post ONE GitHub review<br/>comment-only + attribution<br/>contested flagged"])
 
-  subgraph R0 ["Round 0 — Review fan-out (parallel)"]
+  subgraph R0 ["Round 0 — Review fan-out · 9 lenses → 6 agents (parallel)"]
     direction LR
-    C1["Correctness"] ~~~ C2["Code Quality"] ~~~ C3["Conventions"] ~~~ C4["Code Reuse"]
-    C5["Security"] ~~~ C6["Efficiency"] ~~~ C7["Risks — for human"] ~~~ CX["Codex — independent bugs"]
+    G1["Correctness & Performance"] ~~~ G2["Craft — quality · taste · standards"] ~~~ G3["Code Reuse"]
+    G4["Security"] ~~~ G5["Tests — coverage & parity"] ~~~ G6["Risks — for human"] ~~~ CX["Codex — independent bugs"]
   end
 
   A --> B
@@ -243,7 +243,7 @@ flowchart TD
     </div>
   </figure>
 
-  <p class="foot">Draft design — not yet built. Reviewers: 7 Claude lenses + Codex (independent bug-spotter). Loop converges by argument (collaborate) or by fixing (fix mode); dismissed findings persist across iterations so they don&rsquo;t resurface.</p>
+  <p class="foot">Draft design — not yet built. Reviewers: 9 Claude lenses grouped into 6 agents + Codex (independent bug-spotter). Loop converges by argument (collaborate) or by fixing (fix mode); dismissed findings persist across iterations so they don&rsquo;t resurface.</p>
 
 </div>
 

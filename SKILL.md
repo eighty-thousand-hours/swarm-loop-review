@@ -1,6 +1,6 @@
 ---
 name: swarm-loop-review
-description: Multi-agent swarm review of a PR, local diff, or implementation plan — fan out 7 reviewer lenses + Codex, debate the findings to convergence, then either discuss them (collaborate) or fix-and-post a single GitHub review (fix). Plan review is collaborate-only. Requires a review-double-checks.md at the target repo root for the codebase-standards lens.
+description: Multi-agent swarm review of a PR, local diff, or implementation plan — fan out 9 reviewer lenses + Codex, debate the findings to convergence, then either discuss them (collaborate) or fix-and-post a single GitHub review (fix). Plan review is collaborate-only. Requires a review-double-checks.md at the target repo root for the codebase-standards lens.
 allowed-tools:
   - Workflow
   - Task
@@ -74,9 +74,19 @@ The fan-out, dedupe, and debate all run as one deterministic Workflow script —
 **`review-workflow.js`** in this skill's directory. The script is the **single source of
 truth** for the lens prompts (diff- and plan-mode variants), the schemas, the disposition
 policy, and the convergence loop; read it there rather than expecting them here. In brief:
-seven review-only lenses — Correctness, Code Quality, Codebase Standards, Code Reuse,
-Security, Efficiency, Risks-for-human-judgment — plus a Codex bug pass, every finding
-cited `file:line`.
+nine review-only lenses — Correctness, Code Quality, Linus Torvalds (taste:
+special-case elimination, data-structures-first, don't-break-userspace, anti-over-engineering),
+Codebase Standards, Code Reuse, Security, Efficiency, Test Coverage & Parity (coverage,
+flakiness, dependency-down resilience, production parity / no needless mocking),
+Risks-for-human-judgment — plus a Codex bug pass, every finding cited `file:line`.
+
+These nine lenses are the **output taxonomy**, not the agent count. To control cost the
+script **groups** them into six reviewer agents by default (one combines Correctness +
+Efficiency; one combines Code Quality + Linus + Standards; Code Reuse, Security, Test
+Coverage & Parity, and Risks each run solo because they need a distinct working mode,
+precision bar, or routing). Each agent still tags findings by individual lens, so the
+buckets and output sections are unchanged. Mini mode collapses to one combined reviewer; the
+grouping lives in the script's `GROUPS` table.
 
 Invoke it with `scriptPath` = `<skill dir>/review-workflow.js` (resolve the skill dir's
 real path) and `args`:
@@ -134,23 +144,25 @@ failed reviewers, missing Codex) which must surface in the output summary.
 ## Step 5 — Fix loop (fix mode only)
 
 1. Apply Agreed findings as code changes; commit per repo convention (`Co-Authored-By: Claude <model>`).
+   - **Re-verify before editing.** A finding's `file:line` may have drifted after an earlier fix in the same loop. Re-read the cited lines (±~10) and confirm the code still matches what the reviewer described; if it doesn't, skip the edit (don't blind-apply a stale citation) and let the next iteration's re-review re-derive it against the current code.
+   - **Mechanical vs. semantic gate.** Apply the fix, then gauge what it touched. A *mechanical* change (rename, comment removal, dedupe, a convention fix verifiable by re-reading or a syntax/type check) is `fixed`. A change to *logic, control flow, or an algorithm* is `fixed — needs human verification`: a syntax/type check proves it parses, not that it's correct. Mark these in the changelog and surface them in the output rather than silently calling them done.
 2. Re-run Step 3's workflow on the changed code (a fresh invocation — regenerate `diff.patch`), carrying the accumulated dismissed-set forward via `args.dismissed` so dropped findings are suppressed (semantic match, not string match).
 3. **Oscillation guard:** if every remaining actionable finding is already in the dismissed-set, stop.
 4. Loop until no actionable Agreed findings remain, or `max-iterations` (default 5).
 
-Risks (lens 7) and Contested items are never auto-fixed; they pass through to output.
+Risks-lens findings and Contested items are never auto-fixed; they pass through to output.
 Plan mode never enters the fix loop.
 
 ## Step 6 — Output
 
 **Format**
 
-- One section per dimension (Correctness, Code Quality, Standards, Code Reuse, Security, Efficiency, Risks), in that order; never merged.
-- Each finding: a section-letter ID numbered within the section (`C1`, `Q1`, `S1`, `E1`, `R1`…); exactly one severity — **issue / suggestion / nit**; and a `file:line` citation (**mandatory, every finding**). Sort within a section issues → suggestions → nits. Bulleted, not numbered (auto-renumbering breaks the IDs).
+- One section per dimension (Correctness, Code Quality, Linus Torvalds, Standards, Code Reuse, Security, Efficiency, Test Coverage & Parity, Risks), in that order; never merged.
+- Each finding: a section-letter ID numbered within the section (`C1`, `Q1`, `L1`, `S1`, `E1`, `T1`, `R1`…); exactly one severity — **issue / suggestion / nit**; and a `file:line` citation (**mandatory, every finding**). Sort within a section issues → suggestions → nits. Bulleted, not numbered (auto-renumbering breaks the IDs).
 - Actionable only — no praise, no "verified X" filler. A clean section is the prose line **"No issues found."** + one factual sentence on what was checked (it signals the section was actually reviewed; keep it visually distinct from bullets).
 - **Contested block:** each item flagged `⚖️ reviewer flagged → author dismissed — your call`, showing both the finding and the dismissal reasoning.
 - **Risks** are phrased as "document this in the PR description so a human can judge," not as code fixes.
-- **Plan mode** appends one extra section — **❓ Questions** (`?1`, `?2`…): blockers the plan's author can answer in a line (distinct from Risks, which need organizational judgment). Citations point at the plan, with `file:line` evidence where applicable.
+- **Plan mode** appends one extra section — **❓ Questions** (`?1`, `?2`…): blockers the plan's author can answer in a line (distinct from Risks, which need organizational judgment). Citations point at the plan, with `file:line` evidence where applicable. Each question carries the reviewer's confidence (**Confident / Likely / Unclear**) and a one-line **"if wrong:"** consequence, so the author can triage which assumptions actually matter.
 
 **Destination**
 
@@ -174,7 +186,7 @@ End a fix run with a changelog table (Iter / ID / Severity / Finding / Action) a
 ## Mini mode
 
 Fast path: set `mini: true` and `maxRescuePasses: 1` in the workflow args. The script then
-runs **two reviewers only** — one Claude reviewer covering *all* seven lenses in a single
+runs **two reviewers only** — one Claude reviewer covering *all* nine lenses in a single
 pass, plus Codex — and **one** kill→rescue exchange (no convergence loop). In fix mode, a
 single fix pass (no re-review loop). Same output format and posting rules.
 
